@@ -64,27 +64,36 @@ purrr::iwalk(
 
 # look at normandy mens to uncover the cold hard truth
 dataframeweek <- dataframeweek %>% 
-        mutate(date_corrected = as_date(as_datetime(date/1000))) # correct the milliseconds
+        mutate(date_corrected = as_date(as_datetime(date/1000)),
+               bowling_month = floor_date(date_corrected, "month"))
 
 normandy_mens <- dataframeframe %>% 
-        filter(leagueFk == 10) %>% 
+                filter(leagueFk == 10) %>% 
         mutate(deliveries = case_when(flags == 0 ~ 0,
                                       flags == 193 ~ 1,
                                       flags == 195 ~ 2),
                frameNum = frameNum + 1,
-               was_strike = case_when(flags == 193 ~ TRUE,
-                                      TRUE ~ FALSE)) %>% 
-        left_join(dataframeweek, by = c('weekFk' ='_id'))
+               was_strike = case_when((flags == 193 &
+                                               scores == 170) ~ TRUE,
+                                      TRUE ~ FALSE),
+               was_open = case_when(scores < 165 ~ TRUE,
+                                    TRUE ~ FALSE)) %>% 
+        left_join(dataframeweek, by = c('weekFk' ='_id')) %>% # correct the milliseconds
+        filter(deliveries != 0) %>% 
+        select('_id', date_corrected, bowling_month, gameFk, frameNum, pins, scores, flags, deliveries, was_strike, was_open) %>% 
+        # not sure why this needs a double mutate...
+         mutate(was_open = case_when(frameNum == 12 ~ FALSE, # if 12th frame but not strike, don't count as open
+                                    (frameNum == 11 & deliveries == 1) ~ FALSE, # if 10th frame spare, don't count 11th as open
+                                    TRUE ~ as.logical(was_open)),
+                count_towards_open = case_when(frameNum == 12 ~ FALSE,
+                                               (frameNum == 11 & deliveries == 1) ~ FALSE,
+                                               TRUE ~ TRUE))
+        
 
 # look at only the last week to try to make sense of it
 last_week <- normandy_mens %>% 
         filter(date_corrected == max(date_corrected),
                gameFk %in% c(237, 238, 239))
-
-last_week_simple <- last_week %>% 
-        select('_id', date_corrected, gameFk, frameNum, pins, scores, flags, deliveries, was_strike) %>% 
-        mutate(was_open = case_when(scores < 165 ~ TRUE,
-                                    TRUE ~ FALSE))
 
 # start sketching out a codebook for leaves ("pins" column)
 leaves <- c(512 = "10", # made 10
@@ -105,13 +114,33 @@ open_frames <- c(119, 153, 134, 144)
 
 ## play around with some analyses
 
-# what's my average?
+# what's my overall average?
 blah <- dataframegame %>% 
         filter(leagueFk == 10) %>% pull(score) %>% mean()
 
 # average over time (monthly)
-
+blah <- dataframegame %>% 
+        filter(leagueFk == 10) %>% 
+        left_join(dataframeweek, by = c('weekFk' ='_id')) %>% 
+        group_by(bowling_month) %>% 
+        summarise(mean(score)) %>% 
+        ungroup()
+        
 # strike # - do the math and replicate/validate with what pinpal spits out
+# strike percentage is accurate!
+strike_check <- normandy_mens %>% 
+        group_by(date_corrected) %>% 
+        summarise(strike_pct = round(sum(was_strike) / n() * 100, 2)) %>% 
+        ungroup()
+
+ggplot(strike_check, aes(x = date_corrected, y = strike_pct)) +
+        geom_line()
+
+# weee
+strike_check <- normandy_mens %>% 
+        group_by(bowling_month) %>% 
+        summarise(strike_pct = round(sum(was_strike) / n() * 100, 2)) %>% 
+        ungroup()
 
 # single spare % over time
 ## needs full codebook of all single pin leaves (10 x 2 possibilities = 20)
@@ -122,6 +151,25 @@ blah <- dataframegame %>%
 # split % - just needs a flag, may already exist
 
 # open % - may just be a flag
+# isn't totally correct, my flag is wrong
+# check 10/10
+check <- normandy_mens %>% filter(date_corrected == "2024-10-10")
+
+normandy_mens %>% 
+        group_by(date_corrected) %>% 
+        summarise(total_opens = sum(was_open),
+                  total_frames = n(),
+                  total_frames2 = sum(count_towards_open),
+                  open_pct1 = round(total_opens / total_frames * 100, 2),
+                  open_pct2 = round(total_opens / total_frames2 * 100, 2)) %>% 
+        ungroup()
+
+# check opens - the math is kind of weird but as long as i'm consisitent...
+# 12/12 game 1: 2 / 11 (or is it 11?)
+# game 2: 2 / 11
+# game 3: 2 / 11
+blah <- normandy_mens %>% 
+        filter(gameFk %in% c(193:195))
 
 ## try to run an anova on scores per game
 check <- dataframegame %>% 
